@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math/big"
 	"net"
 	"net/http"
 	"os"
@@ -14,6 +15,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/davecgh/go-spew/spew"
+	"github.com/gagliardetto/solana-go"
+	"github.com/gagliardetto/solana-go/rpc"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
@@ -25,7 +29,7 @@ import (
 
 const (
 	TTL               = 10 * time.Second
-	defaultServerAddr = ":52052"
+	defaultServerAddr = ":8080"
 	maxBodyBytes      = 1 << 20
 )
 
@@ -47,7 +51,7 @@ type GetBalanceResponse struct {
 	Balances []WalletBalance `json:"balances"`
 }
 
-type rateLimit struct {
+type ipRateLimiter struct {
 	mu       sync.Mutex
 	limiters map[string]*rate.Limiter
 	r        rate.Limit
@@ -113,6 +117,7 @@ func initMongo(ctx context.Context) error {
 // do----> Validations
 
 func validateApiKey(ctx context.Context, key string) (bool, error) {
+
 	if key == "" {
 		return false, nil
 	}
@@ -121,9 +126,11 @@ func validateApiKey(ctx context.Context, key string) (bool, error) {
 		Active bool   `bson:"active"`
 	}
 	err := apiKeysColl.FindOne(ctx, bson.M{"key": key, "active": true}).Decode(&doc)
+
 	if err == mongo.ErrNoDocuments {
 		return false, nil
 	}
+
 	return err == nil && doc.Active, err
 
 }
@@ -132,15 +139,15 @@ func validateApiKey(ctx context.Context, key string) (bool, error) {
 // do----> Hashing??
 // do----> Optim RateLimit
 
-func rateIPLimit(r rate.Limit, b int) *rateLimit {
+func rateIPLimit(r rate.Limit, b int) *ipRateLimiter {
 
-	return &rateLimit{limiters: make(map[string]*rate.Limiter), r: r, b: b}
+	return &ipRateLimiter{limiters: make(map[string]*rate.Limiter), r: r, b: b}
 
 }
 
-func (i *rateLimit) getLimiter(ip string) *rate.Limiter {
+func (i *ipRateLimiter) getLimiter(ip string) *rate.Limiter {
 
-	i.mu.Unlock()
+	i.mu.Lock()
 	defer i.mu.Unlock()
 	lim, exists := i.limiters[ip]
 
@@ -299,7 +306,7 @@ func writeJSON(w http.ResponseWriter, status int, v interface{}) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-func authAndRateLimit(limiter *rateLimit, next http.Handler) http.Handler {
+func authAndRateLimit(limiter *ipRateLimiter, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 		defer cancel()
@@ -358,6 +365,7 @@ func handleGetBalance(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if len(unique) == 0 {
+		log.Printf("wallets len=%d, payload=%v", len(req.Wallets), req.Wallets)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "no valid wallet addresses"})
 		return
 	}
@@ -436,25 +444,25 @@ func main() {
 		log.Fatalf("server failed: %v", err)
 	}
 
-	// endpoint := rpc.MainNetBeta_RPC
-	// client := rpc.New(endpoint)
+	endpoint := rpc.MainNetBeta_RPC
+	client := rpc.New(endpoint)
 
-	// pubKey := solana.MustPublicKeyFromBase58("7xLk17EQQ5KLDLDe44wCmupJKJjTGd8hs3eSVVhCx932")
-	// out, err := client.GetBalance(
-	// 	context.TODO(),
-	// 	pubKey,
-	// 	rpc.CommitmentFinalized,
-	// )
-	// if err != nil {
-	// 	panic(err)
-	// }
-	// spew.Dump(out)
-	// spew.Dump(out.Value) // total lamports on the account; 1 sol = 1000000000 lamports
+	pubKey := solana.MustPublicKeyFromBase58("7xLk17EQQ5KLDLDe44wCmupJKJjTGd8hs3eSVVhCx932")
+	out, err := client.GetBalance(
+		context.TODO(),
+		pubKey,
+		rpc.CommitmentFinalized,
+	)
+	if err != nil {
+		panic(err)
+	}
+	spew.Dump(out)
+	spew.Dump(out.Value) // total lamports on the account; 1 sol = 1000000000 lamports
 
-	// var lamportsOnAccount = new(big.Float).SetUint64(uint64(out.Value))
-	// // Convert lamports to sol:
-	// var solBalance = new(big.Float).Quo(lamportsOnAccount, new(big.Float).SetUint64(solana.LAMPORTS_PER_SOL))
+	var lamportsOnAccount = new(big.Float).SetUint64(uint64(out.Value))
+	// Convert lamports to sol:
+	var solBalance = new(big.Float).Quo(lamportsOnAccount, new(big.Float).SetUint64(solana.LAMPORTS_PER_SOL))
 
-	// // WARNING: this is not a precise conversion.
-	// fmt.Println("◎", solBalance.Text('f', 10))
+	// WARNING: this is not a precise conversion.
+	fmt.Println("◎", solBalance.Text('f', 10))
 }

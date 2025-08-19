@@ -6,6 +6,8 @@ require (
 	github.com/davecgh/go-spew v1.1.1
 	github.com/gagliardetto/solana-go v1.13.0
 	go.mongodb.org/mongo-driver v1.17.4
+	golang.org/x/sync v0.8.0
+	golang.org/x/time v0.0.0-20191024005414-555d28b269f0
 )
 
 require (
@@ -38,9 +40,7 @@ require (
 	go.uber.org/ratelimit v0.2.0 // indirect
 	go.uber.org/zap v1.21.0 // indirect
 	golang.org/x/crypto v0.26.0 // indirect
-	golang.org/x/sync v0.8.0 // indirect
 	golang.org/x/sys v0.23.0 // indirect
 	golang.org/x/term v0.23.0 // indirect
 	golang.org/x/text v0.17.0 // indirect
-	golang.org/x/time v0.0.0-20191024005414-555d28b269f0 // indirect
 )
