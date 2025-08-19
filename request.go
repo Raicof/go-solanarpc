@@ -1,3 +1,13 @@
+//	TESTS
+//
+// The rest API working with 1 wallet. -- WORKS
+// The rest API working with multiple wallets. -- WORKS
+// The rest API working with 5 requests using the same wallet. -- WORKS
+// The rest API working with all of the above at the same time. -- WORKS
+// The rest API working with IP rate limiting. -- Further checks
+// The rest API working with caching. -- Further checks
+// Testing authentication and rate limiting. -- Further checks
+// OPTIMIZE
 package main
 
 import (
@@ -34,18 +44,6 @@ const (
 )
 
 // ---- start structures
-
-type WalletBalance struct {
-	Wallet   string  `json:"wallet"`
-	Lamports uint64  `json:"lamports"`
-	SOL      float64 `json:"sol"`
-	Cached   bool    `json:"cached"`
-	Source   string  `json:"source"`
-}
-
-type GetBalanceRequest struct {
-	Wallets []string `json:"wallets"`
-}
 
 type GetBalanceResponse struct {
 	Balances []WalletBalance `json:"balances"`
@@ -215,6 +213,8 @@ var httpClient = &http.Client{
 	},
 }
 
+// do -----> fetch Balance from wallet
+
 func fetchBalanceRPC(ctx context.Context, wallet string) (uint64, error) {
 	rpcURL := os.Getenv("HELIUS_RPC_URL")
 	if rpcURL == "" {
@@ -260,6 +260,8 @@ func fetchBalanceRPC(ctx context.Context, wallet string) (uint64, error) {
 	return rr.Result.Value, nil
 }
 
+//--- balance cache
+
 func getBalanceCached(ctx context.Context, wallet string) (uint64, bool, error) {
 	if val, ok := getFromCache(wallet); ok {
 		return val, true, nil
@@ -281,6 +283,8 @@ func getBalanceCached(ctx context.Context, wallet string) (uint64, bool, error) 
 	return v.(uint64), false, nil
 }
 
+//--- IP client
+
 func getClientIP(r *http.Request) string {
 	xff := r.Header.Get("X-Forwarded-For")
 	if xff != "" {
@@ -297,14 +301,28 @@ func getClientIP(r *http.Request) string {
 	if err == nil {
 		return host
 	}
+	log.Printf("Client IP: %s", r.RemoteAddr)
 	return r.RemoteAddr
 }
+
+// --- clean cache
+func handleClearCache(w http.ResponseWriter, r *http.Request) {
+	cacheMu.Lock()
+	defer cacheMu.Unlock()
+	cache = make(map[string]cacheEntry)
+	writeJSON(w, http.StatusOK, map[string]string{"status": "cache cleared"})
+	return
+}
+
+//--- build JSON
 
 func writeJSON(w http.ResponseWriter, status int, v interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
 }
+
+// do---> RateLimit on auth
 
 func authAndRateLimit(limiter *ipRateLimiter, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -338,6 +356,20 @@ func authAndRateLimit(limiter *ipRateLimiter, next http.Handler) http.Handler {
 	})
 }
 
+// do ---> workBalance
+
+type WalletBalance struct {
+	Wallet   string  `json:"wallet"`
+	Lamports uint64  `json:"lamports"`
+	SOL      float64 `json:"sol"`
+	Cached   bool    `json:"cached"`
+	Source   string  `json:"source"`
+}
+
+type GetBalanceRequest struct {
+	Wallets []string `json:"wallets"`
+}
+
 func handleGetBalance(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
@@ -357,13 +389,12 @@ func handleGetBalance(w http.ResponseWriter, r *http.Request) {
 	seen := make(map[string]struct{}, len(req.Wallets))
 	for _, wlt := range req.Wallets {
 		w := strings.TrimSpace(wlt)
-		if w == "" {
-			continue
-		}
 		if _, ok := seen[w]; !ok {
 			seen[w] = struct{}{}
+			unique = append(unique, w)
 		}
 	}
+
 	if len(unique) == 0 {
 		log.Printf("wallets len=%d, payload=%v", len(req.Wallets), req.Wallets)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "no valid wallet addresses"})
@@ -430,6 +461,7 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.Handle("/api/get-balance", authAndRateLimit(limiter, http.HandlerFunc(handleGetBalance)))
+	mux.Handle("/api/clear-cache", authAndRateLimit(limiter, http.HandlerFunc(handleClearCache)))
 
 	srv := &http.Server{
 		Addr:         defaultServerAddr,
